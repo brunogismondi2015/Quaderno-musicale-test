@@ -689,12 +689,58 @@ function renderPages() {
 
 // Apply EXIF rotation and cap the size. homr autocrops before resizing to
 // 1920 px wide, so keep typical phone resolution (~4000 px) intact.
+// Experimental image enhancement: selectable and OFF by default.
+// The original scan is retained; enhancement affects only the OMR input.
+let photoEnhancement = false;
+function installPhotoEnhancementControl() {
+  const target = document.getElementById("recognise");
+  if (!target || document.getElementById("gismondi-enhance")) return;
+  const label = document.createElement("label");
+  label.style.cssText = "display:flex;gap:9px;align-items:center;margin:12px 0;font-size:0.95rem";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.id = "gismondi-enhance";
+  checkbox.checked = false;
+  checkbox.addEventListener("change", () => { photoEnhancement = checkbox.checked; });
+  label.append(checkbox, document.createTextNode("Prova miglioramento foto (sperimentale)"));
+  target.parentNode.insertBefore(label, target);
+}
+installPhotoEnhancementControl();
+
+function enhanceScoreImage(ctx, width, height) {
+  // Local luminance normalization with a coarse background estimate. Avoid
+  // thresholding: faint beams, ledger lines and note stems must survive.
+  const scale = Math.max(1, Math.round(Math.max(width, height) / 96));
+  const smallW = Math.max(1, Math.ceil(width / scale));
+  const smallH = Math.max(1, Math.ceil(height / scale));
+  const tiny = new OffscreenCanvas(smallW, smallH);
+  const tc = tiny.getContext("2d", {willReadFrequently:true});
+  tc.drawImage(ctx.canvas, 0, 0, smallW, smallH);
+  const bg = tc.getImageData(0, 0, smallW, smallH).data;
+  const im = ctx.getImageData(0, 0, width, height);
+  const d = im.data;
+  for (let y = 0; y < height; y++) {
+    const by = Math.min(smallH - 1, Math.floor(y / scale));
+    for (let x = 0; x < width; x++) {
+      const k = (y * width + x) * 4;
+      const b = (by * smallW + Math.min(smallW - 1, Math.floor(x / scale))) * 4;
+      const background = Math.max(100, 0.2126*bg[b]+0.7152*bg[b+1]+0.0722*bg[b+2]);
+      const luminance = 0.2126*d[k]+0.7152*d[k+1]+0.0722*d[k+2];
+      const adjusted = Math.max(0, Math.min(255, 255 - (background - luminance) * 1.15));
+      d[k] = d[k+1] = d[k+2] = adjusted;
+    }
+  }
+  ctx.putImageData(im, 0, 0);
+}
+
 async function normalise(blob) {
   const bmp = await createImageBitmap(blob, { imageOrientation: "from-image" });
   const scale = Math.min(1, 4200 / Math.max(bmp.width, bmp.height));
   const canvas = new OffscreenCanvas(Math.round(bmp.width * scale), Math.round(bmp.height * scale));
-  canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const context = canvas.getContext("2d", {willReadFrequently:photoEnhancement});
+  context.drawImage(bmp, 0, 0, canvas.width, canvas.height);
   bmp.close();
+  if (photoEnhancement) enhanceScoreImage(context, canvas.width, canvas.height);
   return (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer();
 }
 
